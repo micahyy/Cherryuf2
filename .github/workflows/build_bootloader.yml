@@ -1,0 +1,40 @@
+name: Build Patched CherryUF2 Bootloader
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-none-eabi git make
+
+      - name: Clone CherryUF2
+        run: |
+          git clone --recursive https://github.com/zhaqian12/Cherryuf2.git /tmp/Cherryuf2
+          cd /tmp/Cherryuf2
+          git submodule update --init --recursive
+
+      - name: Patch GCCFG for HS VBUS
+        run: |
+          cd /tmp/Cherryuf2
+          # Patch usb_glue_at.c to add VBUS session valid bits for HS
+          sed -i 's/return ((1 << 16) | (1 << 21));/return ((1 << 16) | (1 << 18) | (1 << 19) | (1 << 21));/g' lib/CherryUSB/port/dwc2/usb_glue_at.c
+          echo "=== Patched usb_glue_at.c HS GCCFG ==="
+          grep -n "return.*1 << 16" lib/CherryUSB/port/dwc2/usb_glue_at.c
+
+      - name: Build HS bootloader
+        run: |
+          cd /tmp/Cherryuf2/ports/ArteryTek/at32f402_405
+          make BOARD=at32f405ccu7_hs clean
+          make BOARD=at32f405ccu7_hs all 2>&1
+          ls -la .build/at32f405ccu7_hs/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherryuf2_at32f405ccu7_hs_patched
+          path: /tmp/Cherryuf2/ports/ArteryTek/at32f402_405/.build/at32f405ccu7_hs/cherryuf2_at32f405ccu7_hs.bin
