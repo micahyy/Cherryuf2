@@ -19,9 +19,10 @@ jobs:
       - name: Download AT32 SDK
         run: |
           git clone --depth 1 https://github.com/ArteryTek/AT32F402_405_Firmware_Library.git /tmp/at32_sdk
-          mkdir -p sdk/ArteryTek
-          cp -r /tmp/at32_sdk sdk/ArteryTek/at32f402_405_library
-          ls sdk/ArteryTek/at32f402_405_library/cmsis/cm4/device_support/at32f402_405.h
+          mkdir -p sdk/ArteryTek/at32f402_405_library
+          cp -r /tmp/at32_sdk/libraries/cmsis sdk/ArteryTek/at32f402_405_library/
+          cp -r /tmp/at32_sdk/libraries/drivers sdk/ArteryTek/at32f402_405_library/
+          find sdk/ArteryTek/at32f402_405_library -name "at32f402_405.h"
 
       - name: Patch GCCFG for HS
         run: |
