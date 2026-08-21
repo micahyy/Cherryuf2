@@ -1,6 +1,8 @@
 name: Build Patched CherryUF2 Bootloader
 
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
 
 jobs:
@@ -28,27 +30,22 @@ jobs:
       - name: Patch GCCFG for HS VBUS session valid
         run: |
           cd /tmp/Cherryuf2
-          # The HS gccfg currently returns (1<<16)|(1<<21) which is power down + transceiver enable
-          # but lacks AVALIDSESEN/BVALIDSESEN needed when no VBUS sensing
-          sed -i 's/if (bustype == USB_DEVICE_SPEED_HS) {/if (bustype == USB_DEVICE_SPEED_HS) {/' lib/CherryUSB/port/dwc2/usb_glue_at.c
-          # Replace the HS return to include session valid bits
-          python3 -c "
+          python3 << 'PYEOF'
           content = open('lib/CherryUSB/port/dwc2/usb_glue_at.c').read()
-          old = '''    if (bustype == USB_DEVICE_SPEED_HS) {
+          old = """    if (bustype == USB_DEVICE_SPEED_HS) {
         return ((1 << 16) | (1 << 21));
-    } else {'''
-          new = '''    if (bustype == USB_DEVICE_SPEED_HS) {
+    } else {"""
+          new = """    if (bustype == USB_DEVICE_SPEED_HS) {
         return ((1 << 16) | (1 << 18) | (1 << 19) | (1 << 21));
-    } else {'''
-          if old not in content:
-              print('WARNING: Pattern not found, showing file:')
-              print(content[:800])
-          else:
+    } else {"""
+          if old in content:
               content = content.replace(old, new)
               open('lib/CherryUSB/port/dwc2/usb_glue_at.c','w').write(content)
-              print('Patch applied successfully')
-          "
-          grep -A2 'bustype == USB_DEVICE_SPEED_HS' lib/CherryUSB/port/dwc2/usb_glue_at.c
+              print('Patch applied: HS GCCFG now includes AVALIDSESEN|BVALIDSESEN')
+          else:
+              print('WARNING: pattern not found')
+              print(content[300:700])
+PYEOF
 
       - name: Build HS bootloader
         run: |
