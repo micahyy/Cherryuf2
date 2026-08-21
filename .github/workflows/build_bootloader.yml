@@ -26,46 +26,8 @@ jobs:
 
       - name: Patch OTGHS PHY clock init
         run: |
-          # The HS bootloader is missing OTGHS PHY clock enable and 12MHz PHY clock source select.
-          # In board_usb.c, the HS branch of usb_dc_low_level_init only enables OTGHS AHB clock,
-          # but does NOT enable the OTGHS PHY peripheral clock (CRM_OTGHSPHY_PERIPH_CLOCK) nor
-          # select the 12MHz HEXT as PHY reference clock. Without PHY clock, the USB transceiver
-          # is completely dead and no enumeration occurs.
-          #
-          # Fix: replace the HS else block to add:
-          #   crm_usb_phy12_clock_select(CRM_USB_PHY12_CLOCK_HEXT_DIV_1);
-          #   crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);
-          #   crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
-          python3 << 'PYEOF'
-          import re
-          path = "ports/ArteryTek/at32f402_405/board_usb.c"
-          with open(path, "r") as f:
-              content = f.read()
-
-          old = """    } else {
-        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
-        nvic_irq_enable(OTGHS_IRQn, 0, 0);
-    }"""
-
-          new = """    } else {
-        crm_usb_phy12_clock_select(CRM_USB_PHY12_CLOCK_HEXT_DIV_1);
-        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);
-        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
-        nvic_irq_enable(OTGHS_IRQn, 0, 0);
-    }"""
-
-          if old not in content:
-              print("ERROR: Could not find target block to patch!")
-              import sys
-              sys.exit(1)
-
-          content = content.replace(old, new)
-          with open(path, "w") as f:
-              f.write(content)
-          print("Patch applied successfully")
-          PYEOF
-          echo "=== Patched board_usb.c usb_dc_low_level_init ==="
-          grep -A 8 "if (busid == BOOTUF2_BUS_ID_FS)" ports/ArteryTek/at32f402_405/board_usb.c
+          sed -i 's|crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);|crm_usb_phy12_clock_select(CRM_USB_PHY12_CLOCK_HEXT_DIV_1);\n        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);\n        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);|' ports/ArteryTek/at32f402_405/board_usb.c
+          grep -n "OTGHSPHY\|phy12\|OTGHS_PERIPH" ports/ArteryTek/at32f402_405/board_usb.c
 
       - name: Build
         run: |
