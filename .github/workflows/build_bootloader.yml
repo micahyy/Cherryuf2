@@ -24,10 +24,17 @@ jobs:
           cp -r /tmp/at32_sdk/libraries/drivers sdk/ArteryTek/at32f402_405_library/
           find sdk/ArteryTek/at32f402_405_library -name "at32f402_405.h"
 
-      - name: Patch OTGHS PHY clock init
+      - name: Patch OTGHS clock and USB volume label
         run: |
-          sed -i 's|crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);|crm_usb_phy12_clock_select(CRM_USB_PHY12_CLOCK_HEXT_DIV_1);\n        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);\n        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);|' ports/ArteryTek/at32f402_405/board_usb.c
-          grep -n "OTGHSPHY\|phy12\|OTGHS_PERIPH" ports/ArteryTek/at32f402_405/board_usb.c
+          # Patch board_usb.c HS branch: add PLLU + USB 48MHz clock + PHY clock
+          sed -i 's|crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);|crm_pllu_output_set(TRUE);\n        while (crm_flag_get(CRM_PLLU_STABLE_FLAG) != SET) {}\n        crm_usb_clock_source_select(CRM_USB_CLOCK_SOURCE_PLLU);\n        crm_usb_phy12_clock_select(CRM_USB_PHY12_CLOCK_HEXT_DIV_1);\n        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);\n        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);|' ports/ArteryTek/at32f402_405/board_usb.c
+          echo "=== board_usb.c after patch ==="
+          grep -n "pllu\|PLLU\|usb_clock\|phy12\|OTGHSPHY\|OTGHS_PERIPH\|nvic" ports/ArteryTek/at32f402_405/board_usb.c
+
+          # Change volume label to CZMboot
+          sed -i 's|"CherryUF2"|"CZMboot"|' ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs/board.h
+          echo "=== board.h volume label ==="
+          grep -n "VOLUME_LABEL\|CZMboot\|CherryUF2" ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs/board.h
 
       - name: Build
         run: |
@@ -38,5 +45,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cherryuf2_hs_patched_v2
+          name: cherryuf2_hs_v3
           path: ports/ArteryTek/at32f402_405/.build/at32f405ccu7_hs/cherryuf2_at32f405ccu7_hs.bin
