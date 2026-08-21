@@ -16,23 +16,17 @@ jobs:
       - name: Install toolchain
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-arm-none-eabi git make
 
-      - name: Download AT32 SDK
+      - name: Download AT32 SDK v2.0.3
         run: |
-          git clone --depth 1 https://github.com/ArteryTek/AT32F402_405_Firmware_Library.git /tmp/at32_sdk
+          git clone --depth 1 --branch v2.0.3 https://github.com/ArteryTek/AT32F402_405_Firmware_Library.git /tmp/at32_sdk
           mkdir -p sdk/ArteryTek/at32f402_405_library
           cp -r /tmp/at32_sdk/libraries/cmsis sdk/ArteryTek/at32f402_405_library/
           cp -r /tmp/at32_sdk/libraries/drivers sdk/ArteryTek/at32f402_405_library/
+          find sdk/ArteryTek/at32f402_405_library -name "at32f402_405.h"
 
-      - name: Patch usb_glue_at.c
+      - name: Patch GCCFG for HS
         run: |
-          # 1. Add VBUS session valid bits for HS (bits 18,19) for bus-powered no-VBUS-sense
           sed -i 's/return ((1 << 16) | (1 << 21));/return ((1 << 16) | (1 << 18) | (1 << 19) | (1 << 21));/g' lib/CherryUSB/port/dwc2/usb_glue_at.c
-          # 2. Remove conflicting redeclarations - SDK already provides system_core_clock and SystemCoreClock macro
-          sed -i '/^uint32_t SystemCoreClock;$/d' lib/CherryUSB/port/dwc2/usb_glue_at.c
-          sed -i '/^extern unsigned int system_core_clock;$/d' lib/CherryUSB/port/dwc2/usb_glue_at.c
-          echo "=== Patched file head ==="
-          head -30 lib/CherryUSB/port/dwc2/usb_glue_at.c
-          echo "=== GCCFG lines ==="
           grep -n "return.*1 << 16" lib/CherryUSB/port/dwc2/usb_glue_at.c
 
       - name: Build
