@@ -24,92 +24,71 @@ jobs:
           cp -r /tmp/at32_sdk/libraries/drivers sdk/ArteryTek/at32f402_405_library/
           find sdk/ArteryTek/at32f402_405_library -name "at32f402_405.h"
 
-      - name: Apply all patches
+      - name: Apply patches
         run: |
           set -e
           BOARD_DIR=ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs
           PORT_DIR=ports/ArteryTek/at32f402_405
-          GLUE=lib/CherryUSB/port/dwc2/usb_glue_at.c
 
-          ############################################################
-          # Patch 1: Volume label -> CZMboot
-          ############################################################
+          # Volume label -> CZMboot
           sed -i 's|"CherryUF2"|"CZMboot"|' $BOARD_DIR/board.h
-          echo "[OK] Volume label set to CZMboot"
+          echo "[OK] Volume label"
 
-          ############################################################
-          # Patch 2: OTGHS clock init (PLLU 48M + PHY 12M)
-          ############################################################
-          # The HS branch only enabled the AHB clock but never enabled
-          # PLLU (48MHz USB logic clock) nor the OTGHS PHY analog clock.
-          # Clock_init sets crm_pllu_div_set but never crm_pllu_output_set.
-          # The PHY 12MHz reference defaults to HEXT/1 which matches
-          # ChibiOS's proven configuration, so we leave that alone.
-          python3 << 'PYEOF'
-          import re
-          path = "ports/ArteryTek/at32f402_405/board_usb.c"
-          with open(path) as f:
-              src = f.read()
-          old = """    } else {
-        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
-        nvic_irq_enable(OTGHS_IRQn, 0, 0);
-    }"""
-          new = """    } else {
-        crm_pllu_output_set(TRUE);
-        while (crm_flag_get(CRM_PLLU_STABLE_FLAG) != SET) {
-        }
-        crm_usb_clock_source_select(CRM_USB_CLOCK_SOURCE_PLLU);
-        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);
-        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
-        nvic_irq_enable(OTGHS_IRQn, 0, 0);
-    }"""
-          assert old in src, "Could not find HS branch in board_usb.c!"
-          src = src.replace(old, new)
-          with open(path, "w") as f:
-              f.write(src)
-          print("[OK] board_usb.c patched")
-          PYEOF
+          # Patch board_usb.c: add PLLU + USB 48MHz + PHY clock in HS branch
+          # Use Python to safely replace the whole else block
+          python3 -c "
+          p = '$PORT_DIR/board_usb.c'
+          s = open(p).read()
+          old = '''    } else {
+          crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
+          nvic_irq_enable(OTGHS_IRQn, 0, 0);
+          }'''
+          new = '''    } else {
+          crm_pllu_output_set(TRUE);
+          while (crm_flag_get(CRM_PLLU_STABLE_FLAG) != SET) {
+          }
+          crm_usb_clock_source_select(CRM_USB_CLOCK_SOURCE_PLLU);
+          crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);
+          crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
+          nvic_irq_enable(OTGHS_IRQn, 0, 0);
+          }'''
+          assert old in s, 'HS branch not found'
+          open(p,'w').write(s.replace(old, new))
+          print('[OK] board_usb.c')
+          "
 
-          ############################################################
-          # Patch 3: Implement usbd_dwc2_delay_ms() properly
-          # The original stub was empty:
-          #   void usbd_dwc2_delay_ms(uint8_t ms) { /* implement later */ }
-          # dwc2_set_mode() calls this with 50ms after forcing device
-          # mode so the PHY can stabilize. With an empty stub the PHY
-          # never stabilizes and enumeration silently fails.
-          ############################################################
-          python3 << 'PYEOF'
-          path = "lib/CherryUSB/port/dwc2/usb_glue_at.c"
-          with open(path) as f:
-              src = f.read()
-          old = """void usbd_dwc2_delay_ms(uint8_t ms)
-{
-    /* implement later */
-}"""
-          new = """void usbd_dwc2_delay_ms(uint8_t ms)
-{
-    /* Simple busy-wait based on system_core_clock (216 MHz).
-       Approximately ms milliseconds, accurate enough for PHY
-       stabilization after device-mode force. */
-    volatile uint32_t i;
-    uint32_t count = (system_core_clock / 4000U) * (uint32_t)ms;
-    for (i = 0; i < count; i++) {
-        __NOP();
-    }
-}"""
-          assert old in src, "Could not find empty delay stub in usb_glue_at.c!"
-          src = src.replace(old, new)
-          with open(path, "w") as f:
-              f.write(src)
-          print("[OK] usb_glue_at.c delay_ms implemented")
-          PYEOF
+          # Patch usb_glue_at.c: implement delay_ms properly
+          # Original empty stub returns immediately; dwc2_set_mode calls
+          # it with 50ms after forcing device mode so PHY can stabilize.
+          python3 -c "
+          p = 'lib/CherryUSB/port/dwc2/usb_glue_at.c'
+          s = open(p).read()
+          old = 'void usbd_dwc2_delay_ms(uint8_t ms)\n{\n'
+          idx = s.find(old)
+          assert idx >= 0, 'delay_ms not found'
+          # Find the matching closing brace
+          end = s.find('\n}', idx)
+          assert end >= 0, 'delay_ms end brace not found'
+          end += 2
+          new = '''void usbd_dwc2_delay_ms(uint8_t ms)
+          {
+              volatile uint32_t i;
+              uint32_t count = (system_core_clock / 4000U) * (uint32_t)ms;
+              for (i = 0; i < count; i++) {
+                  __NOP();
+              }
+          }'''
+          s = s[:idx] + new + s[end:]
+          open(p,'w').write(s)
+          print('[OK] delay_ms implemented')
+          "
 
-          echo "=== Verify patches ==="
-          grep -n "pllu\|PLLU\|usb_clock\|OTGHSPHY\|OTGHS_PERIPH" $PORT_DIR/board_usb.c
-          echo "---"
-          grep -n "CZMboot\|CherryUF2" $BOARD_DIR/board.h
-          echo "---"
-          grep -n -A8 "usbd_dwc2_delay_ms" $GLUE
+          echo '=== Verify board_usb.c ==='
+          grep -n 'pllu\|PLLU\|usb_clock\|OTGHSPHY\|OTGHS_PERIPH' $PORT_DIR/board_usb.c
+          echo '=== Verify label ==='
+          grep -n 'CZMboot\|VOLUME_LABEL' $BOARD_DIR/board.h
+          echo '=== Verify delay_ms ==='
+          grep -n -A6 'usbd_dwc2_delay_ms' lib/CherryUSB/port/dwc2/usb_glue_at.c
 
       - name: Build
         run: |
