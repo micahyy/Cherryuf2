@@ -1,4 +1,4 @@
-name: Build Patched CherryUF2 Bootloader
+name: Build Patched CherryUF2
 
 on:
   push:
@@ -9,54 +9,33 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Install toolchain
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gcc-arm-none-eabi git make
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Clone CherryUF2 with submodules
-        run: |
-          git clone --recursive https://github.com/micahyy/Cherryuf2.git /tmp/Cherryuf2
-          cd /tmp/Cherryuf2
-          git submodule update --init --recursive
+      - name: Install toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-arm-none-eabi git make
 
       - name: Download AT32 SDK
         run: |
           git clone --depth 1 https://github.com/ArteryTek/AT32F402_405_Firmware_Library.git /tmp/at32_sdk
-          mkdir -p /tmp/Cherryuf2/sdk/ArteryTek
-          cp -r /tmp/at32_sdk /tmp/Cherryuf2/sdk/ArteryTek/at32f402_405_library
-          ls /tmp/Cherryuf2/sdk/ArteryTek/at32f402_405_library/cmsis/cm4/device_support/at32f402_405.h
+          mkdir -p sdk/ArteryTek
+          cp -r /tmp/at32_sdk sdk/ArteryTek/at32f402_405_library
+          ls sdk/ArteryTek/at32f402_405_library/cmsis/cm4/device_support/at32f402_405.h
 
-      - name: Patch GCCFG for HS VBUS session valid
+      - name: Patch GCCFG for HS
         run: |
-          cd /tmp/Cherryuf2
-          python3 << 'PYEOF'
-          content = open('lib/CherryUSB/port/dwc2/usb_glue_at.c').read()
-          old = """    if (bustype == USB_DEVICE_SPEED_HS) {
-        return ((1 << 16) | (1 << 21));
-    } else {"""
-          new = """    if (bustype == USB_DEVICE_SPEED_HS) {
-        return ((1 << 16) | (1 << 18) | (1 << 19) | (1 << 21));
-    } else {"""
-          if old in content:
-              content = content.replace(old, new)
-              open('lib/CherryUSB/port/dwc2/usb_glue_at.c','w').write(content)
-              print('Patch applied: HS GCCFG now includes AVALIDSESEN|BVALIDSESEN')
-          else:
-              print('WARNING: pattern not found')
-              print(content[300:700])
-PYEOF
+          sed -i 's/return ((1 << 16) | (1 << 21));/return ((1 << 16) | (1 << 18) | (1 << 19) | (1 << 21));/g' lib/CherryUSB/port/dwc2/usb_glue_at.c
+          grep -n "return.*1 << 16" lib/CherryUSB/port/dwc2/usb_glue_at.c
 
-      - name: Build HS bootloader
+      - name: Build
         run: |
-          cd /tmp/Cherryuf2/ports/ArteryTek/at32f402_405
+          cd ports/ArteryTek/at32f402_405
           make BOARD=at32f405ccu7_hs clean
-          make BOARD=at32f405ccu7_hs all 2>&1
-          echo "=== Build output ==="
+          make BOARD=at32f405ccu7_hs all
           ls -la .build/at32f405ccu7_hs/
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: cherryuf2_at32f405ccu7_hs_patched
-          path: /tmp/Cherryuf2/ports/ArteryTek/at32f402_405/.build/at32f405ccu7_hs/cherryuf2_at32f405ccu7_hs.bin
+          name: cherryuf2_hs_patched
+          path: ports/ArteryTek/at32f402_405/.build/at32f405ccu7_hs/cherryuf2_at32f405ccu7_hs.bin
