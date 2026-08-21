@@ -22,71 +22,74 @@ jobs:
           mkdir -p sdk/ArteryTek/at32f402_405_library
           cp -r /tmp/at32_sdk/libraries/cmsis sdk/ArteryTek/at32f402_405_library/
           cp -r /tmp/at32_sdk/libraries/drivers sdk/ArteryTek/at32f402_405_library/
-          find sdk/ArteryTek/at32f402_405_library -name "at32f402_405.h"
 
-      - name: Apply patches
+      - name: Write patch script
         run: |
-          set -e
-          BOARD_DIR=ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs
-          PORT_DIR=ports/ArteryTek/at32f402_405
+          cat > /tmp/patch.py << 'PYEOF'
+          import sys
 
-          # Volume label -> CZMboot
-          sed -i 's|"CherryUF2"|"CZMboot"|' $BOARD_DIR/board.h
-          echo "[OK] Volume label"
+          # ---- Patch 1: volume label ----
+          p1 = "ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs/board.h"
+          s = open(p1).read()
+          assert '"CherryUF2"' in s, "volume label not found"
+          s = s.replace('"CherryUF2"', '"CZMboot"')
+          open(p1, "w").write(s)
+          print("[OK] volume label -> CZMboot")
 
-          # Patch board_usb.c: add PLLU + USB 48MHz + PHY clock in HS branch
-          # Use Python to safely replace the whole else block
-          python3 -c "
-          p = '$PORT_DIR/board_usb.c'
-          s = open(p).read()
-          old = '''    } else {
-          crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
-          nvic_irq_enable(OTGHS_IRQn, 0, 0);
-          }'''
-          new = '''    } else {
-          crm_pllu_output_set(TRUE);
-          while (crm_flag_get(CRM_PLLU_STABLE_FLAG) != SET) {
-          }
-          crm_usb_clock_source_select(CRM_USB_CLOCK_SOURCE_PLLU);
-          crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);
-          crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
-          nvic_irq_enable(OTGHS_IRQn, 0, 0);
-          }'''
-          assert old in s, 'HS branch not found'
-          open(p,'w').write(s.replace(old, new))
-          print('[OK] board_usb.c')
-          "
+          # ---- Patch 2: OTGHS clock init in board_usb.c ----
+          p2 = "ports/ArteryTek/at32f402_405/board_usb.c"
+          s = open(p2).read()
+          old = (
+              "    } else {\n"
+              "        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);\n"
+              "        nvic_irq_enable(OTGHS_IRQn, 0, 0);\n"
+              "    }\n"
+          )
+          new = (
+              "    } else {\n"
+              "        crm_pllu_output_set(TRUE);\n"
+              "        while (crm_flag_get(CRM_PLLU_STABLE_FLAG) != SET) {\n"
+              "        }\n"
+              "        crm_usb_clock_source_select(CRM_USB_CLOCK_SOURCE_PLLU);\n"
+              "        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);\n"
+              "        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);\n"
+              "        nvic_irq_enable(OTGHS_IRQn, 0, 0);\n"
+              "    }\n"
+          )
+          assert old in s, "HS branch not found in board_usb.c"
+          s = s.replace(old, new)
+          open(p2, "w").write(s)
+          print("[OK] board_usb.c OTGHS clocks")
 
-          # Patch usb_glue_at.c: implement delay_ms properly
-          # Original empty stub returns immediately; dwc2_set_mode calls
-          # it with 50ms after forcing device mode so PHY can stabilize.
-          python3 -c "
-          p = 'lib/CherryUSB/port/dwc2/usb_glue_at.c'
-          s = open(p).read()
-          old = 'void usbd_dwc2_delay_ms(uint8_t ms)\n{\n'
-          idx = s.find(old)
-          assert idx >= 0, 'delay_ms not found'
-          # Find the matching closing brace
-          end = s.find('\n}', idx)
-          assert end >= 0, 'delay_ms end brace not found'
+          # ---- Patch 3: proper usbd_dwc2_delay_ms ----
+          p3 = "lib/CherryUSB/port/dwc2/usb_glue_at.c"
+          s = open(p3).read()
+          marker = "void usbd_dwc2_delay_ms(uint8_t ms)\n{"
+          idx = s.find(marker)
+          assert idx >= 0, "delay_ms not found"
+          end = s.find("\n}", idx)
+          assert end >= 0, "delay_ms closing brace not found"
           end += 2
-          new = '''void usbd_dwc2_delay_ms(uint8_t ms)
-          {
-              volatile uint32_t i;
-              uint32_t count = (system_core_clock / 4000U) * (uint32_t)ms;
-              for (i = 0; i < count; i++) {
-                  __NOP();
-              }
-          }'''
-          s = s[:idx] + new + s[end:]
-          open(p,'w').write(s)
-          print('[OK] delay_ms implemented')
-          "
+          new_fn = (
+              "void usbd_dwc2_delay_ms(uint8_t ms)\n"
+              "{\n"
+              "    volatile uint32_t i;\n"
+              "    uint32_t count = (system_core_clock / 4000U) * (uint32_t)ms;\n"
+              "    for (i = 0; i < count; i++) {\n"
+              "        __NOP();\n"
+              "    }\n"
+              "}"
+          )
+          s = s[:idx] + new_fn + s[end:]
+          open(p3, "w").write(s)
+          print("[OK] delay_ms implemented")
+          PYEOF
+          python3 /tmp/patch.py
 
           echo '=== Verify board_usb.c ==='
-          grep -n 'pllu\|PLLU\|usb_clock\|OTGHSPHY\|OTGHS_PERIPH' $PORT_DIR/board_usb.c
+          grep -n 'pllu\|PLLU\|usb_clock\|OTGHSPHY\|OTGHS_PERIPH' ports/ArteryTek/at32f402_405/board_usb.c
           echo '=== Verify label ==='
-          grep -n 'CZMboot\|VOLUME_LABEL' $BOARD_DIR/board.h
+          grep -n 'CZMboot\|VOLUME_LABEL' ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs/board.h
           echo '=== Verify delay_ms ==='
           grep -n -A6 'usbd_dwc2_delay_ms' lib/CherryUSB/port/dwc2/usb_glue_at.c
 
