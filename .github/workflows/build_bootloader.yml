@@ -12,25 +12,50 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq gcc-arm-none-eabi git make
 
-      - name: Clone CherryUF2
+      - name: Clone CherryUF2 with submodules
         run: |
-          git clone --recursive https://github.com/zhaqian12/Cherryuf2.git /tmp/Cherryuf2
+          git clone --recursive https://github.com/micahyy/Cherryuf2.git /tmp/Cherryuf2
           cd /tmp/Cherryuf2
           git submodule update --init --recursive
 
-      - name: Patch GCCFG for HS VBUS
+      - name: Download AT32 SDK
+        run: |
+          git clone --depth 1 https://github.com/ArteryTek/AT32F402_405_Firmware_Library.git /tmp/at32_sdk
+          mkdir -p /tmp/Cherryuf2/sdk/ArteryTek
+          cp -r /tmp/at32_sdk /tmp/Cherryuf2/sdk/ArteryTek/at32f402_405_library
+          ls /tmp/Cherryuf2/sdk/ArteryTek/at32f402_405_library/cmsis/cm4/device_support/at32f402_405.h
+
+      - name: Patch GCCFG for HS VBUS session valid
         run: |
           cd /tmp/Cherryuf2
-          # Patch usb_glue_at.c to add VBUS session valid bits for HS
-          sed -i 's/return ((1 << 16) | (1 << 21));/return ((1 << 16) | (1 << 18) | (1 << 19) | (1 << 21));/g' lib/CherryUSB/port/dwc2/usb_glue_at.c
-          echo "=== Patched usb_glue_at.c HS GCCFG ==="
-          grep -n "return.*1 << 16" lib/CherryUSB/port/dwc2/usb_glue_at.c
+          # The HS gccfg currently returns (1<<16)|(1<<21) which is power down + transceiver enable
+          # but lacks AVALIDSESEN/BVALIDSESEN needed when no VBUS sensing
+          sed -i 's/if (bustype == USB_DEVICE_SPEED_HS) {/if (bustype == USB_DEVICE_SPEED_HS) {/' lib/CherryUSB/port/dwc2/usb_glue_at.c
+          # Replace the HS return to include session valid bits
+          python3 -c "
+          content = open('lib/CherryUSB/port/dwc2/usb_glue_at.c').read()
+          old = '''    if (bustype == USB_DEVICE_SPEED_HS) {
+        return ((1 << 16) | (1 << 21));
+    } else {'''
+          new = '''    if (bustype == USB_DEVICE_SPEED_HS) {
+        return ((1 << 16) | (1 << 18) | (1 << 19) | (1 << 21));
+    } else {'''
+          if old not in content:
+              print('WARNING: Pattern not found, showing file:')
+              print(content[:800])
+          else:
+              content = content.replace(old, new)
+              open('lib/CherryUSB/port/dwc2/usb_glue_at.c','w').write(content)
+              print('Patch applied successfully')
+          "
+          grep -A2 'bustype == USB_DEVICE_SPEED_HS' lib/CherryUSB/port/dwc2/usb_glue_at.c
 
       - name: Build HS bootloader
         run: |
           cd /tmp/Cherryuf2/ports/ArteryTek/at32f402_405
           make BOARD=at32f405ccu7_hs clean
           make BOARD=at32f405ccu7_hs all 2>&1
+          echo "=== Build output ==="
           ls -la .build/at32f405ccu7_hs/
 
       - name: Upload artifact
