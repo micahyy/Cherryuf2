@@ -24,19 +24,57 @@ jobs:
           cp -r /tmp/at32_sdk/libraries/drivers sdk/ArteryTek/at32f402_405_library/
           find sdk/ArteryTek/at32f402_405_library -name "at32f402_405.h"
 
-      - name: Patch GCCFG for HS
+      - name: Patch OTGHS PHY clock init
         run: |
-          sed -i 's/return ((1 << 16) | (1 << 21));/return ((1 << 16) | (1 << 18) | (1 << 19) | (1 << 21));/g' lib/CherryUSB/port/dwc2/usb_glue_at.c
-          grep -n "return.*1 << 16" lib/CherryUSB/port/dwc2/usb_glue_at.c
+          # The HS bootloader is missing OTGHS PHY clock enable and 12MHz PHY clock source select.
+          # In board_usb.c, the HS branch of usb_dc_low_level_init only enables OTGHS AHB clock,
+          # but does NOT enable the OTGHS PHY peripheral clock (CRM_OTGHSPHY_PERIPH_CLOCK) nor
+          # select the 12MHz HEXT as PHY reference clock. Without PHY clock, the USB transceiver
+          # is completely dead and no enumeration occurs.
+          #
+          # Fix: replace the HS else block to add:
+          #   crm_usb_phy12_clock_select(CRM_USB_PHY12_CLOCK_HEXT_DIV_1);
+          #   crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);
+          #   crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
+          python3 << 'PYEOF'
+          import re
+          path = "ports/ArteryTek/at32f402_405/board_usb.c"
+          with open(path, "r") as f:
+              content = f.read()
+
+          old = """    } else {
+        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
+        nvic_irq_enable(OTGHS_IRQn, 0, 0);
+    }"""
+
+          new = """    } else {
+        crm_usb_phy12_clock_select(CRM_USB_PHY12_CLOCK_HEXT_DIV_1);
+        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);
+        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
+        nvic_irq_enable(OTGHS_IRQn, 0, 0);
+    }"""
+
+          if old not in content:
+              print("ERROR: Could not find target block to patch!")
+              import sys
+              sys.exit(1)
+
+          content = content.replace(old, new)
+          with open(path, "w") as f:
+              f.write(content)
+          print("Patch applied successfully")
+          PYEOF
+          echo "=== Patched board_usb.c usb_dc_low_level_init ==="
+          grep -A 8 "if (busid == BOOTUF2_BUS_ID_FS)" ports/ArteryTek/at32f402_405/board_usb.c
 
       - name: Build
         run: |
           cd ports/ArteryTek/at32f402_405
           make BOARD=at32f405ccu7_hs clean
-          make BOARD=at32f405ccu7_hs all
+          make BOARD=at32f405ccu7_hs all 2>&1
           ls -la .build/at32f405ccu7_hs/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cherryuf2_hs_patched
+          name: cherryuf2_hs_patched_v2
           path: ports/ArteryTek/at32f402_405/.build/at32f405ccu7_hs/cherryuf2_at32f405ccu7_hs.bin
