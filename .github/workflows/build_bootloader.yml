@@ -24,17 +24,92 @@ jobs:
           cp -r /tmp/at32_sdk/libraries/drivers sdk/ArteryTek/at32f402_405_library/
           find sdk/ArteryTek/at32f402_405_library -name "at32f402_405.h"
 
-      - name: Patch OTGHS clock and USB volume label
+      - name: Apply all patches
         run: |
-          # Patch board_usb.c HS branch: add PLLU + USB 48MHz clock + PHY clock
-          sed -i 's|crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);|crm_pllu_output_set(TRUE);\n        while (crm_flag_get(CRM_PLLU_STABLE_FLAG) != SET) {}\n        crm_usb_clock_source_select(CRM_USB_CLOCK_SOURCE_PLLU);\n        crm_usb_phy12_clock_select(CRM_USB_PHY12_CLOCK_HEXT_DIV_1);\n        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);\n        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);|' ports/ArteryTek/at32f402_405/board_usb.c
-          echo "=== board_usb.c after patch ==="
-          grep -n "pllu\|PLLU\|usb_clock\|phy12\|OTGHSPHY\|OTGHS_PERIPH\|nvic" ports/ArteryTek/at32f402_405/board_usb.c
+          set -e
+          BOARD_DIR=ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs
+          PORT_DIR=ports/ArteryTek/at32f402_405
+          GLUE=lib/CherryUSB/port/dwc2/usb_glue_at.c
 
-          # Change volume label to CZMboot
-          sed -i 's|"CherryUF2"|"CZMboot"|' ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs/board.h
-          echo "=== board.h volume label ==="
-          grep -n "VOLUME_LABEL\|CZMboot\|CherryUF2" ports/ArteryTek/at32f402_405/boards/at32f405ccu7_hs/board.h
+          ############################################################
+          # Patch 1: Volume label -> CZMboot
+          ############################################################
+          sed -i 's|"CherryUF2"|"CZMboot"|' $BOARD_DIR/board.h
+          echo "[OK] Volume label set to CZMboot"
+
+          ############################################################
+          # Patch 2: OTGHS clock init (PLLU 48M + PHY 12M)
+          ############################################################
+          # The HS branch only enabled the AHB clock but never enabled
+          # PLLU (48MHz USB logic clock) nor the OTGHS PHY analog clock.
+          # Clock_init sets crm_pllu_div_set but never crm_pllu_output_set.
+          # The PHY 12MHz reference defaults to HEXT/1 which matches
+          # ChibiOS's proven configuration, so we leave that alone.
+          python3 << 'PYEOF'
+          import re
+          path = "ports/ArteryTek/at32f402_405/board_usb.c"
+          with open(path) as f:
+              src = f.read()
+          old = """    } else {
+        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
+        nvic_irq_enable(OTGHS_IRQn, 0, 0);
+    }"""
+          new = """    } else {
+        crm_pllu_output_set(TRUE);
+        while (crm_flag_get(CRM_PLLU_STABLE_FLAG) != SET) {
+        }
+        crm_usb_clock_source_select(CRM_USB_CLOCK_SOURCE_PLLU);
+        crm_periph_clock_enable(CRM_OTGHSPHY_PERIPH_CLOCK, TRUE);
+        crm_periph_clock_enable(CRM_OTGHS_PERIPH_CLOCK, TRUE);
+        nvic_irq_enable(OTGHS_IRQn, 0, 0);
+    }"""
+          assert old in src, "Could not find HS branch in board_usb.c!"
+          src = src.replace(old, new)
+          with open(path, "w") as f:
+              f.write(src)
+          print("[OK] board_usb.c patched")
+          PYEOF
+
+          ############################################################
+          # Patch 3: Implement usbd_dwc2_delay_ms() properly
+          # The original stub was empty:
+          #   void usbd_dwc2_delay_ms(uint8_t ms) { /* implement later */ }
+          # dwc2_set_mode() calls this with 50ms after forcing device
+          # mode so the PHY can stabilize. With an empty stub the PHY
+          # never stabilizes and enumeration silently fails.
+          ############################################################
+          python3 << 'PYEOF'
+          path = "lib/CherryUSB/port/dwc2/usb_glue_at.c"
+          with open(path) as f:
+              src = f.read()
+          old = """void usbd_dwc2_delay_ms(uint8_t ms)
+{
+    /* implement later */
+}"""
+          new = """void usbd_dwc2_delay_ms(uint8_t ms)
+{
+    /* Simple busy-wait based on system_core_clock (216 MHz).
+       Approximately ms milliseconds, accurate enough for PHY
+       stabilization after device-mode force. */
+    volatile uint32_t i;
+    uint32_t count = (system_core_clock / 4000U) * (uint32_t)ms;
+    for (i = 0; i < count; i++) {
+        __NOP();
+    }
+}"""
+          assert old in src, "Could not find empty delay stub in usb_glue_at.c!"
+          src = src.replace(old, new)
+          with open(path, "w") as f:
+              f.write(src)
+          print("[OK] usb_glue_at.c delay_ms implemented")
+          PYEOF
+
+          echo "=== Verify patches ==="
+          grep -n "pllu\|PLLU\|usb_clock\|OTGHSPHY\|OTGHS_PERIPH" $PORT_DIR/board_usb.c
+          echo "---"
+          grep -n "CZMboot\|CherryUF2" $BOARD_DIR/board.h
+          echo "---"
+          grep -n -A8 "usbd_dwc2_delay_ms" $GLUE
 
       - name: Build
         run: |
@@ -45,5 +120,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cherryuf2_hs_v3
+          name: cherryuf2_hs_v4
           path: ports/ArteryTek/at32f402_405/.build/at32f405ccu7_hs/cherryuf2_at32f405ccu7_hs.bin
